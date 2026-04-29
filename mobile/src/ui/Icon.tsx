@@ -6,7 +6,13 @@ type IconName =
   | 'play'
   | 'pause'
   | 'trash-2'
-  | 'file-text';
+  | 'file-text'
+  | 'user'
+  | 'cloud'
+  | 'mail'
+  | 'check-circle'
+  | 'alert-circle'
+  | 'log-out';
 
 export function Icon({
   name,
