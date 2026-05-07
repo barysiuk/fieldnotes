@@ -1,5 +1,6 @@
-import { ActivityIndicator, Animated, Modal, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Animated, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import type { AppNotice } from './NoticeBanner';
 import { NoticeBanner } from './NoticeBanner';
@@ -42,79 +43,81 @@ export function RecorderSheet({
       }}
       visible={isOpen}
     >
-      <SafeAreaView style={styles.screen}>
-        <StatusBar style="dark" />
+      <SafeAreaProvider>
+        <SafeAreaView edges={['top']} style={styles.screen}>
+          <StatusBar style="dark" />
 
-        <View style={styles.header}>
-          <View>
-            <Text style={styles.title}>New voice note</Text>
-          </View>
-
-          <Pressable
-            accessibilityRole="button"
-            disabled={isRecording || isSaving}
-            onPress={onClose}
-            style={({ pressed }) => [
-              styles.closeButton,
-              (pressed || isRecording || isSaving) && styles.actionPressed,
-            ]}
-          >
-            <Icon color="#2f241f" name="x" size={18} />
-          </Pressable>
-        </View>
-
-        <View style={styles.sheet}>
-          <Text style={styles.body}>Click record when you&apos;re ready.</Text>
-          <Text style={styles.timer}>{timerLabel}</Text>
-
-          <View style={styles.actionWrap}>
-            <Animated.View
-              style={[
-                styles.pulse,
-                !isRecording ? styles.pulseHidden : null,
-                {
-                  opacity: pulseOpacity,
-                  transform: [{ scale: pulseScale }],
-                },
-              ]}
-            />
+          <View style={styles.header}>
+            <View>
+              <Text style={styles.title}>New voice note</Text>
+            </View>
 
             <Pressable
               accessibilityRole="button"
-              disabled={isLoading || isSaving}
-              onPress={isRecording ? onStopRecording : onStartRecording}
+              disabled={isRecording || isSaving}
+              onPress={onClose}
               style={({ pressed }) => [
-                styles.action,
-                isRecording ? styles.actionStop : styles.actionStart,
-                (pressed || isLoading || isSaving) && styles.actionPressed,
+                styles.closeButton,
+                (pressed || isRecording || isSaving) && styles.actionPressed,
               ]}
             >
-              {isSaving ? (
-                <ActivityIndicator color="#fff7ef" />
-              ) : (
-                <Icon
-                  color="#fff7ef"
-                  name={isRecording ? 'square' : 'mic'}
-                  size={26}
-                />
-              )}
+              <Icon color="#2f241f" name="x" size={18} />
             </Pressable>
           </View>
 
-          {errorNotice ? <NoticeBanner notice={errorNotice} /> : null}
+          <View style={styles.sheet}>
+            <Text style={styles.body}>Click record when you&apos;re ready.</Text>
+            <Text style={styles.timer}>{timerLabel}</Text>
 
-          {hasRecordingPermission === false ? (
-            <Text style={styles.hint}>
-              Microphone permission is required before you can record.
-            </Text>
-          ) : (
-            <Text style={styles.hint}>
-              This note will be saved on device and you can convert it into text when
-              you have internet.
-            </Text>
-          )}
-        </View>
-      </SafeAreaView>
+            <View style={styles.actionWrap}>
+              <Animated.View
+                style={[
+                  styles.pulse,
+                  !isRecording ? styles.pulseHidden : null,
+                  {
+                    opacity: pulseOpacity,
+                    transform: [{ scale: pulseScale }],
+                  },
+                ]}
+              />
+
+              <Pressable
+                accessibilityRole="button"
+                disabled={isLoading || isSaving}
+                onPress={isRecording ? onStopRecording : onStartRecording}
+                style={({ pressed }) => [
+                  styles.action,
+                  isRecording ? styles.actionStop : styles.actionStart,
+                  (pressed || isLoading || isSaving) && styles.actionPressed,
+                ]}
+              >
+                {isSaving ? (
+                  <ActivityIndicator color="#fff7ef" />
+                ) : (
+                  <Icon
+                    color="#fff7ef"
+                    name={isRecording ? 'square' : 'mic'}
+                    size={26}
+                  />
+                )}
+              </Pressable>
+            </View>
+
+            {errorNotice ? <NoticeBanner notice={errorNotice} /> : null}
+
+            {hasRecordingPermission === false ? (
+              <Text style={styles.hint}>
+                Microphone permission is required before you can record.
+              </Text>
+            ) : (
+              <Text style={styles.hint}>
+                This note will be saved on device and you can convert it into text when
+                you have internet.
+              </Text>
+            )}
+          </View>
+        </SafeAreaView>
+      </SafeAreaProvider>
     </Modal>
   );
 }

@@ -1,5 +1,6 @@
-import { ActivityIndicator, Modal, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import { formatDate, formatFileSize, formatPlaybackTime, getStatusIconColor, getStatusIconName, getVoiceNoteStatusLabel } from '../lib/voiceNoteUi';
 import type { VoiceNote } from '../types';
@@ -40,134 +41,136 @@ export function NoteDetailSheet({
 }) {
   return (
     <Modal animationType="slide" onRequestClose={onClose} visible={Boolean(note)}>
-      <SafeAreaView style={styles.screen}>
-        <StatusBar style="dark" />
+      <SafeAreaProvider>
+        <SafeAreaView edges={['top']} style={styles.screen}>
+          <StatusBar style="dark" />
 
-        {note ? (
-          <>
-            <View style={styles.header}>
-              <View>
-                <Text style={styles.eyebrow}>Voice note</Text>
-                <Text style={styles.title}>Playback</Text>
+          {note ? (
+            <>
+              <View style={styles.header}>
+                <View>
+                  <Text style={styles.eyebrow}>Voice note</Text>
+                  <Text style={styles.title}>Playback</Text>
+                </View>
+
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={onClose}
+                  style={({ pressed }) => [
+                    styles.closeButton,
+                    pressed && styles.actionPressed,
+                  ]}
+                >
+                  <Icon color="#2f241f" name="x" size={18} />
+                </Pressable>
               </View>
 
-              <Pressable
-                accessibilityRole="button"
-                onPress={onClose}
-                style={({ pressed }) => [
-                  styles.closeButton,
-                  pressed && styles.actionPressed,
-                ]}
+              <ScrollView
+                style={styles.scroll}
+                contentContainerStyle={styles.content}
+                showsVerticalScrollIndicator={false}
               >
-                <Icon color="#2f241f" name="x" size={18} />
-              </Pressable>
-            </View>
+                <View style={styles.hero}>
+                  <Text style={styles.noteTitle}>Voice note</Text>
+                  <Text style={styles.noteMeta}>
+                    {formatDate(note.createdAt)} · {formatFileSize(note.sizeBytes)}
+                  </Text>
 
-            <ScrollView
-              style={styles.scroll}
-              contentContainerStyle={styles.content}
-              showsVerticalScrollIndicator={false}
-            >
-              <View style={styles.hero}>
-                <Text style={styles.noteTitle}>Voice note</Text>
-                <Text style={styles.noteMeta}>
-                  {formatDate(note.createdAt)} · {formatFileSize(note.sizeBytes)}
-                </Text>
+                  <View style={styles.statusRow}>
+                    {note.syncStatus === 'uploading' ||
+                    note.processingStatus === 'transcribing' ? (
+                      <ActivityIndicator color={getStatusIconColor(note)} size="small" />
+                    ) : (
+                      <Icon
+                        color={getStatusIconColor(note)}
+                        name={getStatusIconName(note)}
+                        size={14}
+                      />
+                    )}
+                    <Text style={styles.statusText}>{getVoiceNoteStatusLabel(note)}</Text>
+                  </View>
 
-                <View style={styles.statusRow}>
-                  {note.syncStatus === 'uploading' ||
-                  note.processingStatus === 'transcribing' ? (
-                    <ActivityIndicator color={getStatusIconColor(note)} size="small" />
-                  ) : (
-                    <Icon
-                      color={getStatusIconColor(note)}
-                      name={getStatusIconName(note)}
-                      size={14}
-                    />
-                  )}
-                  <Text style={styles.statusText}>{getVoiceNoteStatusLabel(note)}</Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={isBusy || isRecording}
+                    onPress={() => {
+                      onTogglePlayback(note);
+                    }}
+                    style={({ pressed }) => [
+                      styles.playButton,
+                      (pressed || isBusy || isRecording) && styles.actionPressed,
+                    ]}
+                  >
+                    <Icon color="#fff7ef" name={isPlaying ? 'pause' : 'play'} size={22} />
+                    <Text style={styles.playLabel}>{isPlaying ? 'Pause' : 'Play'}</Text>
+                  </Pressable>
+
+                  {(isPlaying || queuedPlaybackId === note.id) ? (
+                    <View style={styles.playback}>
+                      <Text style={styles.playbackStatus}>
+                        {!isPlayerLoaded && queuedPlaybackId === note.id
+                          ? 'Loading audio...'
+                          : isPlaying
+                            ? `Playing ${formatPlaybackTime(playbackTime)} / ${formatPlaybackTime(playbackDuration)}`
+                            : 'Paused'}
+                      </Text>
+                      <View style={styles.playbackTrack}>
+                        <View
+                          style={[
+                            styles.playbackFill,
+                            { width: `${playbackProgress}%` },
+                          ]}
+                        />
+                      </View>
+                    </View>
+                  ) : null}
                 </View>
+
+                {note.transcriptText ? (
+                  <View style={styles.card}>
+                    <Text style={styles.cardLabel}>Transcript</Text>
+                    <Text style={styles.transcriptText}>{note.transcriptText}</Text>
+                  </View>
+                ) : (
+                  <View style={styles.card}>
+                    <Text style={styles.cardLabel}>Transcript</Text>
+                    <Text style={styles.placeholderText}>
+                      This note will show transcript text after sync and processing.
+                    </Text>
+                  </View>
+                )}
+
+                {note.lastError ? (
+                  <NoticeBanner notice={{ tone: 'error', text: note.lastError }} />
+                ) : errorNotice ? (
+                  <NoticeBanner notice={errorNotice} />
+                ) : null}
 
                 <Pressable
                   accessibilityRole="button"
                   disabled={isBusy || isRecording}
                   onPress={() => {
-                    onTogglePlayback(note);
+                    onDelete(note);
                   }}
                   style={({ pressed }) => [
-                    styles.playButton,
+                    styles.deleteButton,
                     (pressed || isBusy || isRecording) && styles.actionPressed,
                   ]}
                 >
-                  <Icon color="#fff7ef" name={isPlaying ? 'pause' : 'play'} size={22} />
-                  <Text style={styles.playLabel}>{isPlaying ? 'Pause' : 'Play'}</Text>
+                  {deletingNoteId === note.id ? (
+                    <ActivityIndicator color="#9d4333" size="small" />
+                  ) : (
+                    <>
+                      <Icon color="#9d4333" name="trash-2" size={16} />
+                      <Text style={styles.deleteLabel}>Delete note</Text>
+                    </>
+                  )}
                 </Pressable>
-
-                {(isPlaying || queuedPlaybackId === note.id) ? (
-                  <View style={styles.playback}>
-                    <Text style={styles.playbackStatus}>
-                      {!isPlayerLoaded && queuedPlaybackId === note.id
-                        ? 'Loading audio...'
-                        : isPlaying
-                          ? `Playing ${formatPlaybackTime(playbackTime)} / ${formatPlaybackTime(playbackDuration)}`
-                          : 'Paused'}
-                    </Text>
-                    <View style={styles.playbackTrack}>
-                      <View
-                        style={[
-                          styles.playbackFill,
-                          { width: `${playbackProgress}%` },
-                        ]}
-                      />
-                    </View>
-                  </View>
-                ) : null}
-              </View>
-
-              {note.transcriptText ? (
-                <View style={styles.card}>
-                  <Text style={styles.cardLabel}>Transcript</Text>
-                  <Text style={styles.transcriptText}>{note.transcriptText}</Text>
-                </View>
-              ) : (
-                <View style={styles.card}>
-                  <Text style={styles.cardLabel}>Transcript</Text>
-                  <Text style={styles.placeholderText}>
-                    This note will show transcript text after sync and processing.
-                  </Text>
-                </View>
-              )}
-
-              {note.lastError ? (
-                <NoticeBanner notice={{ tone: 'error', text: note.lastError }} />
-              ) : errorNotice ? (
-                <NoticeBanner notice={errorNotice} />
-              ) : null}
-
-              <Pressable
-                accessibilityRole="button"
-                disabled={isBusy || isRecording}
-                onPress={() => {
-                  onDelete(note);
-                }}
-                style={({ pressed }) => [
-                  styles.deleteButton,
-                  (pressed || isBusy || isRecording) && styles.actionPressed,
-                ]}
-              >
-                {deletingNoteId === note.id ? (
-                  <ActivityIndicator color="#9d4333" size="small" />
-                ) : (
-                  <>
-                    <Icon color="#9d4333" name="trash-2" size={16} />
-                    <Text style={styles.deleteLabel}>Delete note</Text>
-                  </>
-                )}
-              </Pressable>
-            </ScrollView>
-          </>
-        ) : null}
-      </SafeAreaView>
+              </ScrollView>
+            </>
+          ) : null}
+        </SafeAreaView>
+      </SafeAreaProvider>
     </Modal>
   );
 }

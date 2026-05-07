@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Animated, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 import {
   getRecordingPermissionsAsync,
   RecordingPresets,
@@ -12,6 +12,7 @@ import {
 } from 'expo-audio';
 import { StatusBar } from 'expo-status-bar';
 import type { Session } from '@supabase/supabase-js';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import { syncVoiceNotesManually } from './src/lib/noteSync';
 import {
@@ -700,180 +701,182 @@ export default function App() {
   });
 
   return (
-    <View style={styles.screen}>
-      <StatusBar style="dark" />
-      <View style={styles.backgroundGlowTop} />
-      <View style={styles.backgroundGlowBottom} />
+    <SafeAreaProvider>
+      <View style={styles.screen}>
+        <StatusBar style="dark" />
+        <View style={styles.backgroundGlowTop} />
+        <View style={styles.backgroundGlowBottom} />
 
-      <SafeAreaView style={styles.safeArea}>
-        <View style={styles.header}>
-          <View style={styles.headerCopy}>
-            <Text style={styles.headerEyebrow}>{formatHeaderDate(new Date())}</Text>
-            <Text style={styles.appName}>FieldNotes</Text>
-          </View>
+        <SafeAreaView edges={['top']} style={styles.safeArea}>
+          <View style={styles.header}>
+            <View style={styles.headerCopy}>
+              <Text style={styles.headerEyebrow}>{formatHeaderDate(new Date())}</Text>
+              <Text style={styles.appName}>FieldNotes</Text>
+            </View>
 
-          <View style={styles.headerActions}>
-            {isBusy || isAuthBusy ? <ActivityIndicator color="#aa4c38" /> : null}
+            <View style={styles.headerActions}>
+              {isBusy || isAuthBusy ? <ActivityIndicator color="#aa4c38" /> : null}
 
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => {
-                setIsSettingsOpen(true);
-              }}
-              style={({ pressed }) => [
-                styles.accountShortcut,
-                pressed && styles.actionPressed,
-              ]}
-            >
-              <View
-                style={[
-                  styles.accountShortcutDot,
-                  accountSession
-                    ? styles.accountShortcutDotActive
-                    : styles.accountShortcutDotIdle,
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  setIsSettingsOpen(true);
+                }}
+                style={({ pressed }) => [
+                  styles.accountShortcut,
+                  pressed && styles.actionPressed,
                 ]}
-              />
-              <Icon color="#1b1412" name="settings" size={18} />
-            </Pressable>
+              >
+                <View
+                  style={[
+                    styles.accountShortcutDot,
+                    accountSession
+                      ? styles.accountShortcutDotActive
+                      : styles.accountShortcutDotIdle,
+                  ]}
+                />
+                <Icon color="#1b1412" name="settings" size={18} />
+              </Pressable>
+            </View>
           </View>
-        </View>
 
-        {currentTab === 'notes' ? (
-          <NotesScreen
-            accountConnected={Boolean(accountSession)}
-            activeSyncNote={activeSyncNote}
-            isAuthBusy={isAuthBusy}
-            isBusy={isBusy}
-            isRecording={recorderState.isRecording}
-            isSyncing={isSyncing}
-            noteCountLabel={noteCountLabel}
-            notes={savedNotes}
-            onOpenNote={setSelectedNoteId}
-            onSyncPress={() => {
-              void handleSyncPress();
-            }}
-            pendingSyncCount={pendingSyncCount}
-            pendingSyncLabel={pendingSyncLabel}
-            shouldShowSyncPanel={shouldShowSyncPanel}
-            syncNotice={syncNotice}
-            syncProgressLabel={syncProgressLabel}
-          />
-        ) : (
-          <DocumentsScreen
-            completedTranscriptCount={completedTranscriptCount}
-            pendingSyncCount={pendingSyncCount}
-          />
-        )}
+          {currentTab === 'notes' ? (
+            <NotesScreen
+              accountConnected={Boolean(accountSession)}
+              activeSyncNote={activeSyncNote}
+              isAuthBusy={isAuthBusy}
+              isBusy={isBusy}
+              isRecording={recorderState.isRecording}
+              isSyncing={isSyncing}
+              noteCountLabel={noteCountLabel}
+              notes={savedNotes}
+              onOpenNote={setSelectedNoteId}
+              onSyncPress={() => {
+                void handleSyncPress();
+              }}
+              pendingSyncCount={pendingSyncCount}
+              pendingSyncLabel={pendingSyncLabel}
+              shouldShowSyncPanel={shouldShowSyncPanel}
+              syncNotice={syncNotice}
+              syncProgressLabel={syncProgressLabel}
+            />
+          ) : (
+            <DocumentsScreen
+              completedTranscriptCount={completedTranscriptCount}
+              pendingSyncCount={pendingSyncCount}
+            />
+          )}
 
-        <View style={styles.bottomDock}>
-          <BottomTabButton
-            icon="disc"
-            isActive={currentTab === 'notes'}
-            label="Notes"
+          <View style={styles.bottomDock}>
+            <BottomTabButton
+              icon="disc"
+              isActive={currentTab === 'notes'}
+              label="Notes"
+              onPress={() => {
+                setCurrentTab('notes');
+              }}
+            />
+
+            <View style={styles.bottomDockSpacer} />
+
+            <BottomTabButton
+              icon="book-open"
+              isActive={currentTab === 'records'}
+              label="Documents"
+              onPress={() => {
+                setCurrentTab('records');
+              }}
+            />
+          </View>
+
+          <Pressable
+            accessibilityRole="button"
+            disabled={isSaving}
             onPress={() => {
-              setCurrentTab('notes');
+              setErrorMessage(null);
+              setIsRecorderOpen(true);
             }}
-          />
+            style={({ pressed }) => [
+              styles.recordFab,
+              (pressed || isSaving) && styles.actionPressed,
+            ]}
+          >
+            <View style={styles.recordFabInner}>
+              <Icon color="#fff7ef" name="mic" size={20} />
+              <Text style={styles.recordFabLabel}>Record</Text>
+            </View>
+          </Pressable>
+        </SafeAreaView>
 
-          <View style={styles.bottomDockSpacer} />
-
-          <BottomTabButton
-            icon="book-open"
-            isActive={currentTab === 'records'}
-            label="Documents"
-            onPress={() => {
-              setCurrentTab('records');
-            }}
-          />
-        </View>
-
-        <Pressable
-          accessibilityRole="button"
-          disabled={isSaving}
-          onPress={() => {
-            setErrorMessage(null);
-            setIsRecorderOpen(true);
+        <NoteDetailSheet
+          deletingNoteId={deletingNoteId}
+          errorNotice={errorNotice}
+          isBusy={isBusy}
+          isPlayerLoaded={playerStatus.isLoaded}
+          isPlaying={Boolean(selectedNote && activeNoteId === selectedNote.id && playerStatus.playing)}
+          isRecording={recorderState.isRecording}
+          note={selectedNote}
+          onClose={() => {
+            setSelectedNoteId(null);
           }}
-          style={({ pressed }) => [
-            styles.recordFab,
-            (pressed || isSaving) && styles.actionPressed,
-          ]}
-        >
-          <View style={styles.recordFabInner}>
-            <Icon color="#fff7ef" name="mic" size={20} />
-            <Text style={styles.recordFabLabel}>Record</Text>
-          </View>
-        </Pressable>
-      </SafeAreaView>
+          onDelete={(note) => {
+            void handleDeleteNote(note);
+          }}
+          onTogglePlayback={(note) => {
+            void handleTogglePlayback(note);
+          }}
+          playbackDuration={playerStatus.duration}
+          playbackProgress={playbackProgress}
+          playbackTime={playerStatus.currentTime}
+          queuedPlaybackId={queuedPlaybackId}
+        />
 
-      <NoteDetailSheet
-        deletingNoteId={deletingNoteId}
-        errorNotice={errorNotice}
-        isBusy={isBusy}
-        isPlayerLoaded={playerStatus.isLoaded}
-        isPlaying={Boolean(selectedNote && activeNoteId === selectedNote.id && playerStatus.playing)}
-        isRecording={recorderState.isRecording}
-        note={selectedNote}
-        onClose={() => {
-          setSelectedNoteId(null);
-        }}
-        onDelete={(note) => {
-          void handleDeleteNote(note);
-        }}
-        onTogglePlayback={(note) => {
-          void handleTogglePlayback(note);
-        }}
-        playbackDuration={playerStatus.duration}
-        playbackProgress={playbackProgress}
-        playbackTime={playerStatus.currentTime}
-        queuedPlaybackId={queuedPlaybackId}
-      />
+        <RecorderSheet
+          errorNotice={errorNotice}
+          hasRecordingPermission={hasRecordingPermission}
+          isLoading={isLoading}
+          isOpen={isRecorderOpen}
+          isRecording={recorderState.isRecording}
+          isSaving={isSaving}
+          onClose={() => {
+            setIsRecorderOpen(false);
+          }}
+          onStartRecording={() => {
+            void handleStartRecording();
+          }}
+          onStopRecording={() => {
+            void handleStopRecording();
+          }}
+          pulseOpacity={pulseOpacity}
+          pulseScale={pulseScale}
+          timerLabel={formatDuration(recorderState.durationMillis)}
+        />
 
-      <RecorderSheet
-        errorNotice={errorNotice}
-        hasRecordingPermission={hasRecordingPermission}
-        isLoading={isLoading}
-        isOpen={isRecorderOpen}
-        isRecording={recorderState.isRecording}
-        isSaving={isSaving}
-        onClose={() => {
-          setIsRecorderOpen(false);
-        }}
-        onStartRecording={() => {
-          void handleStartRecording();
-        }}
-        onStopRecording={() => {
-          void handleStopRecording();
-        }}
-        pulseOpacity={pulseOpacity}
-        pulseScale={pulseScale}
-        timerLabel={formatDuration(recorderState.durationMillis)}
-      />
-
-      <SettingsSheet
-        authAction={authAction}
-        authNotice={authNotice}
-        emailInput={emailInput}
-        isSupabaseConfigured={isSupabaseConfigured}
-        onClose={() => {
-          setIsSettingsOpen(false);
-        }}
-        onCreateAccount={() => {
-          void handleCreateAccount();
-        }}
-        onEmailChange={setEmailInput}
-        onPasswordChange={setPasswordInput}
-        onSignIn={() => {
-          void handleSignIn();
-        }}
-        onSignOut={() => {
-          void handleSignOut();
-        }}
-        passwordInput={passwordInput}
-        session={accountSession}
-        visible={isSettingsOpen}
-      />
-    </View>
+        <SettingsSheet
+          authAction={authAction}
+          authNotice={authNotice}
+          emailInput={emailInput}
+          isSupabaseConfigured={isSupabaseConfigured}
+          onClose={() => {
+            setIsSettingsOpen(false);
+          }}
+          onCreateAccount={() => {
+            void handleCreateAccount();
+          }}
+          onEmailChange={setEmailInput}
+          onPasswordChange={setPasswordInput}
+          onSignIn={() => {
+            void handleSignIn();
+          }}
+          onSignOut={() => {
+            void handleSignOut();
+          }}
+          passwordInput={passwordInput}
+          session={accountSession}
+          visible={isSettingsOpen}
+        />
+      </View>
+    </SafeAreaProvider>
   );
 }
 

@@ -1,6 +1,7 @@
-import { ActivityIndicator, Modal, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import type { Session } from '@supabase/supabase-js';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import { Icon } from './Icon';
 import { NoticeBanner, type AppNotice } from './NoticeBanner';
@@ -40,169 +41,171 @@ export function SettingsSheet({
 
   return (
     <Modal animationType="slide" onRequestClose={onClose} visible={visible}>
-      <SafeAreaView style={styles.screen}>
-        <StatusBar style="dark" />
+      <SafeAreaProvider>
+        <SafeAreaView edges={['top']} style={styles.screen}>
+          <StatusBar style="dark" />
 
-        <View style={styles.header}>
-          <View>
-            <Text style={styles.eyebrow}>Settings</Text>
-            <Text style={styles.title}>Settings</Text>
+          <View style={styles.header}>
+            <View>
+              <Text style={styles.eyebrow}>Settings</Text>
+              <Text style={styles.title}>Settings</Text>
+            </View>
+
+            <Pressable
+              accessibilityRole="button"
+              onPress={onClose}
+              style={({ pressed }) => [
+                styles.closeButton,
+                pressed && styles.actionPressed,
+              ]}
+            >
+              <Icon color="#2f241f" name="x" size={18} />
+            </Pressable>
           </View>
 
-          <Pressable
-            accessibilityRole="button"
-            onPress={onClose}
-            style={({ pressed }) => [
-              styles.closeButton,
-              pressed && styles.actionPressed,
-            ]}
+          <ScrollView
+            style={styles.scroll}
+            contentContainerStyle={styles.content}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
           >
-            <Icon color="#2f241f" name="x" size={18} />
-          </Pressable>
-        </View>
+            {!isSupabaseConfigured ? (
+              <View style={styles.setupCard}>
+                <Text style={styles.setupTitle}>Supabase setup required</Text>
+                <Text style={styles.setupBody}>
+                  Add the project URL and anon key in `mobile/.env`, then enable
+                  Email auth in Supabase.
+                </Text>
+              </View>
+            ) : null}
 
-        <ScrollView
-          style={styles.scroll}
-          contentContainerStyle={styles.content}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-        >
-          {!isSupabaseConfigured ? (
-            <View style={styles.setupCard}>
-              <Text style={styles.setupTitle}>Supabase setup required</Text>
-              <Text style={styles.setupBody}>
-                Add the project URL and anon key in `mobile/.env`, then enable
-                Email auth in Supabase.
-              </Text>
-            </View>
-          ) : null}
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel}>Account</Text>
 
-          <View style={styles.section}>
-            <Text style={styles.sectionLabel}>Account</Text>
+              <View style={styles.surface}>
+                {session ? (
+                  <>
+                    <View style={styles.accountRow}>
+                      <View
+                        style={[
+                          styles.accountIconWrap,
+                          styles.accountIconWrapActive,
+                        ]}
+                      >
+                        <Icon color="#fff7ef" name="check-circle" size={18} />
+                      </View>
 
-            <View style={styles.surface}>
-              {session ? (
-                <>
-                  <View style={styles.accountRow}>
-                    <View
-                      style={[
-                        styles.accountIconWrap,
-                        styles.accountIconWrapActive,
+                      <View style={styles.accountCopy}>
+                        <Text style={styles.accountState}>Signed in</Text>
+                        <Text style={styles.accountEmail}>
+                          {accountEmail ?? 'Email unavailable'}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {authNotice ? <NoticeBanner notice={authNotice} /> : null}
+
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={authAction === 'signout'}
+                      onPress={onSignOut}
+                      style={({ pressed }) => [
+                        styles.secondaryButton,
+                        (pressed || authAction === 'signout') && styles.actionPressed,
                       ]}
                     >
-                      <Icon color="#fff7ef" name="check-circle" size={18} />
+                      {authAction === 'signout' ? (
+                        <ActivityIndicator color="#9d4333" />
+                      ) : (
+                        <>
+                          <Icon color="#9d4333" name="log-out" size={16} />
+                          <Text style={styles.secondaryButtonLabel}>Sign out</Text>
+                        </>
+                      )}
+                    </Pressable>
+                  </>
+                ) : (
+                  <>
+                    <Text style={styles.sectionBody}>
+                      Sign in to sync notes and convert voice notes into text when
+                      you have internet.
+                    </Text>
+
+                    {authNotice ? <NoticeBanner notice={authNotice} /> : null}
+
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.inputLabel}>Email</Text>
+                      <TextInput
+                        autoCapitalize="none"
+                        autoComplete="email"
+                        keyboardType="email-address"
+                        onChangeText={onEmailChange}
+                        placeholder="name@example.com"
+                        placeholderTextColor="#8f7b72"
+                        style={styles.textInput}
+                        value={emailInput}
+                      />
                     </View>
 
-                    <View style={styles.accountCopy}>
-                      <Text style={styles.accountState}>Signed in</Text>
-                      <Text style={styles.accountEmail}>
-                        {accountEmail ?? 'Email unavailable'}
-                      </Text>
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.inputLabel}>Password</Text>
+                      <TextInput
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        onChangeText={onPasswordChange}
+                        placeholder="At least 6 characters"
+                        placeholderTextColor="#8f7b72"
+                        secureTextEntry
+                        style={styles.textInput}
+                        textContentType="password"
+                        value={passwordInput}
+                      />
                     </View>
-                  </View>
 
-                  {authNotice ? <NoticeBanner notice={authNotice} /> : null}
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={authAction === 'signin'}
+                      onPress={onSignIn}
+                      style={({ pressed }) => [
+                        styles.primaryButton,
+                        (pressed || authAction === 'signin') && styles.actionPressed,
+                      ]}
+                    >
+                      {authAction === 'signin' ? (
+                        <ActivityIndicator color="#fff7ef" />
+                      ) : (
+                        <>
+                          <Icon color="#fff7ef" name="mail" size={16} />
+                          <Text style={styles.primaryButtonLabel}>Sign in</Text>
+                        </>
+                      )}
+                    </Pressable>
 
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={authAction === 'signout'}
-                    onPress={onSignOut}
-                    style={({ pressed }) => [
-                      styles.secondaryButton,
-                      (pressed || authAction === 'signout') && styles.actionPressed,
-                    ]}
-                  >
-                    {authAction === 'signout' ? (
-                      <ActivityIndicator color="#9d4333" />
-                    ) : (
-                      <>
-                        <Icon color="#9d4333" name="log-out" size={16} />
-                        <Text style={styles.secondaryButtonLabel}>Sign out</Text>
-                      </>
-                    )}
-                  </Pressable>
-                </>
-              ) : (
-                <>
-                  <Text style={styles.sectionBody}>
-                    Sign in to sync notes and convert voice notes into text when
-                    you have internet.
-                  </Text>
-
-                  {authNotice ? <NoticeBanner notice={authNotice} /> : null}
-
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>Email</Text>
-                    <TextInput
-                      autoCapitalize="none"
-                      autoComplete="email"
-                      keyboardType="email-address"
-                      onChangeText={onEmailChange}
-                      placeholder="name@example.com"
-                      placeholderTextColor="#8f7b72"
-                      style={styles.textInput}
-                      value={emailInput}
-                    />
-                  </View>
-
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>Password</Text>
-                    <TextInput
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                      onChangeText={onPasswordChange}
-                      placeholder="At least 6 characters"
-                      placeholderTextColor="#8f7b72"
-                      secureTextEntry
-                      style={styles.textInput}
-                      textContentType="password"
-                      value={passwordInput}
-                    />
-                  </View>
-
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={authAction === 'signin'}
-                    onPress={onSignIn}
-                    style={({ pressed }) => [
-                      styles.primaryButton,
-                      (pressed || authAction === 'signin') && styles.actionPressed,
-                    ]}
-                  >
-                    {authAction === 'signin' ? (
-                      <ActivityIndicator color="#fff7ef" />
-                    ) : (
-                      <>
-                        <Icon color="#fff7ef" name="mail" size={16} />
-                        <Text style={styles.primaryButtonLabel}>Sign in</Text>
-                      </>
-                    )}
-                  </Pressable>
-
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={authAction === 'signup'}
-                    onPress={onCreateAccount}
-                    style={({ pressed }) => [
-                      styles.secondaryButton,
-                      (pressed || authAction === 'signup') && styles.actionPressed,
-                    ]}
-                  >
-                    {authAction === 'signup' ? (
-                      <ActivityIndicator color="#9d4333" />
-                    ) : (
-                      <>
-                        <Icon color="#9d4333" name="user" size={16} />
-                        <Text style={styles.secondaryButtonLabel}>Create account</Text>
-                      </>
-                    )}
-                  </Pressable>
-                </>
-              )}
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={authAction === 'signup'}
+                      onPress={onCreateAccount}
+                      style={({ pressed }) => [
+                        styles.secondaryButton,
+                        (pressed || authAction === 'signup') && styles.actionPressed,
+                      ]}
+                    >
+                      {authAction === 'signup' ? (
+                        <ActivityIndicator color="#9d4333" />
+                      ) : (
+                        <>
+                          <Icon color="#9d4333" name="user" size={16} />
+                          <Text style={styles.secondaryButtonLabel}>Create account</Text>
+                        </>
+                      )}
+                    </Pressable>
+                  </>
+                )}
+              </View>
             </View>
-          </View>
-        </ScrollView>
-      </SafeAreaView>
+          </ScrollView>
+        </SafeAreaView>
+      </SafeAreaProvider>
     </Modal>
   );
 }
