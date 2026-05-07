@@ -2,17 +2,25 @@ import { Feather } from '@expo/vector-icons';
 
 type IconName =
   | 'mic'
+  | 'disc'
   | 'square'
   | 'play'
   | 'pause'
+  | 'check'
   | 'trash-2'
   | 'file-text'
+  | 'book-open'
+  | 'layers'
   | 'user'
+  | 'settings'
   | 'cloud'
   | 'mail'
   | 'check-circle'
   | 'alert-circle'
-  | 'log-out';
+  | 'log-out'
+  | 'refresh-cw'
+  | 'x'
+  | 'chevron-right';
 
 export function Icon({
   name,

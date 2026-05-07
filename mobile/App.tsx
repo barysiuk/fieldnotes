@@ -1,13 +1,5 @@
-import { useEffect, useState } from 'react';
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Animated, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 import {
   getRecordingPermissionsAsync,
   RecordingPresets,
@@ -21,6 +13,15 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import type { Session } from '@supabase/supabase-js';
 
+import { syncVoiceNotesManually } from './src/lib/noteSync';
+import {
+  formatDuration,
+  formatHeaderDate,
+  getPlaybackProgress,
+  getSyncProgressLabel,
+  isVoiceNotePendingSync,
+  type SyncRunState,
+} from './src/lib/voiceNoteUi';
 import {
   getSupabaseClient,
   isSupabaseConfigured,
@@ -28,22 +29,23 @@ import {
   signUpWithEmailPassword,
   supabase,
 } from './src/lib/supabase';
-import { syncVoiceNotesManually } from './src/lib/noteSync';
 import {
   deleteVoiceNote,
   initializeVoiceNotesStore,
   listVoiceNotes,
   persistVoiceNote,
 } from './src/lib/voiceNotes';
+import { DocumentsScreen } from './src/screens/DocumentsScreen';
+import { NotesScreen } from './src/screens/NotesScreen';
 import type { VoiceNote } from './src/types';
+import { BottomTabButton } from './src/ui/BottomTabButton';
 import { Icon } from './src/ui/Icon';
+import { NoteDetailSheet } from './src/ui/NoteDetailSheet';
+import type { AppNotice } from './src/ui/NoticeBanner';
+import { RecorderSheet } from './src/ui/RecorderSheet';
+import { SettingsSheet } from './src/ui/SettingsSheet';
 
-type AppTab = 'notes' | 'records' | 'account';
-type NoticeTone = 'error' | 'info' | 'success';
-type AppNotice = {
-  tone: NoticeTone;
-  text: string;
-};
+type AppTab = 'notes' | 'records';
 
 const RECORDING_OPTIONS = {
   ...RecordingPresets.HIGH_QUALITY,
@@ -61,11 +63,12 @@ export default function App() {
   const [isSaving, setIsSaving] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [deletingNoteId, setDeletingNoteId] = useState<string | null>(null);
+  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
   const [queuedPlaybackId, setQueuedPlaybackId] = useState<string | null>(null);
-  const [hasRecordingPermission, setHasRecordingPermission] = useState<
-    boolean | null
-  >(null);
+  const [hasRecordingPermission, setHasRecordingPermission] = useState<boolean | null>(
+    null
+  );
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [accountSession, setAccountSession] = useState<Session | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(isSupabaseConfigured);
@@ -76,15 +79,24 @@ export default function App() {
   const [passwordInput, setPasswordInput] = useState('');
   const [authNotice, setAuthNotice] = useState<AppNotice | null>(null);
   const [syncNotice, setSyncNotice] = useState<AppNotice | null>(null);
+  const [isRecorderOpen, setIsRecorderOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [syncRunState, setSyncRunState] = useState<SyncRunState | null>(null);
+  const pulseAnimation = useRef(new Animated.Value(0)).current;
 
   const activeNote = activeNoteId
     ? savedNotes.find((note) => note.id === activeNoteId) ?? null
     : null;
+  const selectedNote = selectedNoteId
+    ? savedNotes.find((note) => note.id === selectedNoteId) ?? null
+    : null;
+
   const player = useAudioPlayer(activeNote ? { uri: activeNote.fileUri } : null, {
     keepAudioSessionActive: true,
     updateInterval: 250,
   });
   const playerStatus = useAudioPlayerStatus(player);
+
   const accountEmail = accountSession?.user.email ?? null;
   const pendingSyncCount = savedNotes.filter(isVoiceNotePendingSync).length;
   const completedTranscriptCount = savedNotes.filter(
@@ -93,13 +105,28 @@ export default function App() {
   const isBusy = isLoading || isSaving || isSyncing || deletingNoteId !== null;
   const isAuthBusy = isAuthLoading || authAction !== null;
   const noteCountLabel =
-    savedNotes.length === 1 ? '1 note' : `${savedNotes.length} notes`;
-  const syncCountLabel =
+    savedNotes.length === 1 ? '1 voice note' : `${savedNotes.length} voice notes`;
+  const pendingSyncLabel =
     pendingSyncCount === 0
-      ? 'All local notes are already synced'
+      ? 'Everything is synced'
       : pendingSyncCount === 1
-        ? '1 note waiting for sync'
-        : `${pendingSyncCount} notes waiting for sync`;
+        ? '1 note needs sync'
+        : `${pendingSyncCount} notes need sync`;
+  const activeSyncNote =
+    savedNotes.find(
+      (note) =>
+        note.syncStatus === 'uploading' || note.processingStatus === 'transcribing'
+    ) ?? null;
+  const syncProgressLabel = getSyncProgressLabel(savedNotes, syncRunState, isSyncing);
+  const playbackProgress = getPlaybackProgress(
+    playerStatus.currentTime,
+    playerStatus.duration
+  );
+  const shouldShowSyncPanel =
+    isSyncing || pendingSyncCount > 0 || syncNotice?.tone === 'error';
+  const errorNotice: AppNotice | null = errorMessage
+    ? { tone: 'error', text: errorMessage }
+    : null;
 
   useEffect(() => {
     let isMounted = true;
@@ -218,6 +245,65 @@ export default function App() {
     setPasswordInput('');
   }, [accountSession]);
 
+  useEffect(() => {
+    if (!isSyncing) {
+      return;
+    }
+
+    let isMounted = true;
+
+    async function pollNotes() {
+      try {
+        const notes = await listVoiceNotes();
+
+        if (isMounted) {
+          setSavedNotes(notes);
+        }
+      } catch {
+        // Ignore transient refresh failures while sync is running.
+      }
+    }
+
+    void pollNotes();
+    const intervalId = setInterval(() => {
+      void pollNotes();
+    }, 900);
+
+    return () => {
+      isMounted = false;
+      clearInterval(intervalId);
+    };
+  }, [isSyncing]);
+
+  useEffect(() => {
+    if (!recorderState.isRecording) {
+      pulseAnimation.stopAnimation();
+      pulseAnimation.setValue(0);
+      return;
+    }
+
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnimation, {
+          duration: 1600,
+          toValue: 1,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseAnimation, {
+          duration: 0,
+          toValue: 0,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+
+    loop.start();
+
+    return () => {
+      loop.stop();
+    };
+  }, [pulseAnimation, recorderState.isRecording]);
+
   async function refreshNotes() {
     const notes = await listVoiceNotes();
     setSavedNotes(notes);
@@ -264,8 +350,6 @@ export default function App() {
     setSyncNotice(null);
     setIsSaving(true);
 
-    const durationMillis = recorderState.durationMillis;
-
     try {
       await recorder.stop();
 
@@ -282,10 +366,12 @@ export default function App() {
 
       await persistVoiceNote({
         sourceUri,
-        durationMillis,
+        durationMillis: recorderState.durationMillis,
         preferredExtension: RECORDING_OPTIONS.extension,
       });
       await refreshNotes();
+      setCurrentTab('notes');
+      setIsRecorderOpen(false);
     } catch (error) {
       setErrorMessage(
         getErrorMessage(error, 'Could not save the recording locally.')
@@ -342,6 +428,10 @@ export default function App() {
         player.pause();
         setActiveNoteId(null);
         setQueuedPlaybackId(null);
+      }
+
+      if (selectedNoteId === note.id) {
+        setSelectedNoteId(null);
       }
 
       await deleteVoiceNote(note);
@@ -515,7 +605,7 @@ export default function App() {
     }
 
     if (!isSupabaseConfigured) {
-      setCurrentTab('account');
+      setIsSettingsOpen(true);
       setAuthNotice({
         tone: 'error',
         text: 'Supabase sync is not configured yet. Add the project URL and anon key in mobile/.env first.',
@@ -524,7 +614,7 @@ export default function App() {
     }
 
     if (!accountSession) {
-      setCurrentTab('account');
+      setIsSettingsOpen(true);
       setAuthNotice({
         tone: 'info',
         text: 'Sign in with email before syncing notes to the server.',
@@ -532,6 +622,21 @@ export default function App() {
       return;
     }
 
+    const notesToSync = savedNotes.filter(isVoiceNotePendingSync);
+
+    if (notesToSync.length === 0) {
+      setSyncNotice({
+        tone: 'info',
+        text: 'Nothing to sync. All saved notes are already uploaded and transcribed.',
+      });
+      return;
+    }
+
+    setSyncRunState({
+      noteIds: notesToSync.map((note) => note.id),
+      startedAt: new Date().toISOString(),
+      total: notesToSync.length,
+    });
     setIsSyncing(true);
 
     try {
@@ -581,614 +686,195 @@ export default function App() {
       });
     } finally {
       setIsSyncing(false);
+      setSyncRunState(null);
     }
   }
+
+  const pulseScale = pulseAnimation.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 1.75],
+  });
+  const pulseOpacity = pulseAnimation.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.28, 0],
+  });
 
   return (
     <View style={styles.screen}>
       <StatusBar style="dark" />
+      <View style={styles.backgroundGlowTop} />
+      <View style={styles.backgroundGlowBottom} />
 
-      <View style={styles.appBar}>
-        <View>
-          <Text style={styles.appName}>FieldNotes</Text>
-          <Text style={styles.appSubhead}>Field capture</Text>
-        </View>
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.header}>
+          <View style={styles.headerCopy}>
+            <Text style={styles.headerEyebrow}>{formatHeaderDate(new Date())}</Text>
+            <Text style={styles.appName}>FieldNotes</Text>
+          </View>
 
-        <View style={styles.appBarStatus}>
-          <Text style={styles.appBarStatusLabel}>
-            {accountEmail ? 'Account ready' : 'Local only'}
-          </Text>
-          {isBusy || isAuthBusy ? <ActivityIndicator color="#9b3d2f" /> : null}
-        </View>
-      </View>
+          <View style={styles.headerActions}>
+            {isBusy || isAuthBusy ? <ActivityIndicator color="#aa4c38" /> : null}
 
-      <View style={styles.tabs}>
-        <TabButton
-          icon="mic"
-          isActive={currentTab === 'notes'}
-          label="Notes"
-          onPress={() => {
-            setCurrentTab('notes');
-          }}
-        />
-        <TabButton
-          icon="file-text"
-          isActive={currentTab === 'records'}
-          label="Records"
-          onPress={() => {
-            setCurrentTab('records');
-          }}
-        />
-        <TabButton
-          icon="user"
-          isActive={currentTab === 'account'}
-          label="Account"
-          onPress={() => {
-            setCurrentTab('account');
-          }}
-        />
-      </View>
-
-      {currentTab === 'notes' ? (
-        <ScrollView
-          style={styles.contentScroll}
-          contentContainerStyle={styles.content}
-          showsVerticalScrollIndicator={false}
-        >
-          <View style={styles.recorderPanel}>
-            <View style={styles.recorderTop}>
-              <View>
-                <Text style={styles.panelLabel}>
-                  {recorderState.isRecording ? 'Recording now' : 'Quick note'}
-                </Text>
-                <Text style={styles.timer}>{formatDuration(recorderState.durationMillis)}</Text>
-              </View>
-
-              <Pressable
-                accessibilityRole="button"
-                disabled={isBusy}
-                onPress={
-                  recorderState.isRecording
-                    ? handleStopRecording
-                    : handleStartRecording
-                }
-                style={({ pressed }) => [
-                  styles.recordAction,
-                  recorderState.isRecording
-                    ? styles.recordActionStop
-                    : styles.recordActionStart,
-                  (pressed || isBusy) && styles.actionPressed,
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                setIsSettingsOpen(true);
+              }}
+              style={({ pressed }) => [
+                styles.accountShortcut,
+                pressed && styles.actionPressed,
+              ]}
+            >
+              <View
+                style={[
+                  styles.accountShortcutDot,
+                  accountSession
+                    ? styles.accountShortcutDotActive
+                    : styles.accountShortcutDotIdle,
                 ]}
-              >
-                {isSaving ? (
-                  <ActivityIndicator color="#fff8ec" />
-                ) : (
-                  <Icon
-                    color="#fff8ec"
-                    name={recorderState.isRecording ? 'square' : 'mic'}
-                    size={22}
-                  />
-                )}
-                <Text style={styles.recordActionLabel}>
-                  {isLoading
-                    ? 'Loading'
-                    : isSaving
-                      ? 'Saving'
-                      : recorderState.isRecording
-                        ? 'Stop'
-                        : 'Record'}
-                </Text>
-              </Pressable>
-            </View>
-
-            {errorMessage ? <Text style={styles.errorText}>{errorMessage}</Text> : null}
-            {hasRecordingPermission === false ? (
-              <Text style={styles.recorderHint}>
-                Microphone permission is required before you can record.
-              </Text>
-            ) : (
-              <Text style={styles.recorderHint}>
-                Tap once to start. Tap again when the note is complete.
-              </Text>
-            )}
-          </View>
-
-          <View style={styles.syncPanel}>
-            <View style={styles.syncTop}>
-              <View style={styles.syncTitleWrap}>
-                <View style={styles.syncIconWrap}>
-                  <Icon color="#7d6552" name="cloud" size={18} />
-                </View>
-                <View>
-                  <Text style={styles.syncTitle}>Server sync</Text>
-                  <Text style={styles.syncMeta}>{syncCountLabel}</Text>
-                </View>
-              </View>
-
-              <Pressable
-                accessibilityRole="button"
-                disabled={isBusy || isAuthBusy}
-                onPress={() => {
-                  void handleSyncPress();
-                }}
-                style={({ pressed }) => [
-                  styles.syncButton,
-                  (pressed || isBusy || isAuthBusy) && styles.actionPressed,
-                ]}
-              >
-                {isSyncing ? (
-                  <ActivityIndicator color="#fff8ec" />
-                ) : (
-                  <Text style={styles.syncButtonLabel}>
-                    {accountSession ? 'Sync now' : 'Connect account'}
-                  </Text>
-                )}
-              </Pressable>
-            </View>
-
-            <Text style={styles.syncBody}>
-              {accountSession
-                ? `Signed in as ${accountEmail ?? 'your account'}. Tap sync when you want to upload pending notes and run transcription on the server.`
-                : 'You can keep recording offline with no account. Sign-in is only required when you want to sync notes to the server.'}
-            </Text>
-
-            {syncNotice ? <NoticeBanner notice={syncNotice} /> : null}
-          </View>
-
-          <View style={styles.sectionHeader}>
-            <View>
-              <Text style={styles.sectionTitle}>Notes</Text>
-              <Text style={styles.sectionMeta}>{noteCountLabel}</Text>
-            </View>
-          </View>
-
-          {savedNotes.length === 0 ? (
-            <View style={styles.emptyCard}>
-              <View style={styles.emptyIconWrap}>
-                <Icon color="#7d6552" name="mic" size={18} />
-              </View>
-              <Text style={styles.emptyTitle}>No field notes yet</Text>
-              <Text style={styles.emptyBody}>
-                Record a note and it will appear here.
-              </Text>
-            </View>
-          ) : (
-            savedNotes.map((note) => {
-              const isActive = activeNoteId === note.id;
-              const isDeleting = deletingNoteId === note.id;
-
-              return (
-                <View key={note.id} style={styles.noteCard}>
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={isBusy || recorderState.isRecording}
-                    onPress={() => {
-                      void handleTogglePlayback(note);
-                    }}
-                    style={({ pressed }) => [
-                      styles.iconButton,
-                      isActive && playerStatus.playing
-                        ? styles.iconButtonActive
-                        : styles.iconButtonIdle,
-                      (pressed || isBusy || recorderState.isRecording) &&
-                        styles.actionPressed,
-                    ]}
-                  >
-                    <Icon
-                      color={
-                        isActive && playerStatus.playing ? '#fff8ec' : '#3e2a1b'
-                      }
-                      name={isActive && playerStatus.playing ? 'pause' : 'play'}
-                      size={20}
-                    />
-                  </Pressable>
-
-                  <View style={styles.noteMeta}>
-                    <View style={styles.noteTopline}>
-                      <Text style={styles.noteTitle}>Voice note</Text>
-                      <Text style={styles.noteDuration}>
-                        {formatDuration(note.durationMillis)}
-                      </Text>
-                    </View>
-
-                    <Text style={styles.noteSecondary}>
-                      {formatDate(note.createdAt)} · {formatFileSize(note.sizeBytes)}
-                    </Text>
-
-                    <View style={styles.noteStatusRow}>
-                      <View
-                        style={[
-                          styles.noteStatusBadge,
-                          getStatusBadgeStyle(note),
-                        ]}
-                      >
-                        <Text style={styles.noteStatusText}>
-                          {getVoiceNoteStatusLabel(note)}
-                        </Text>
-                      </View>
-                    </View>
-
-                    {note.transcriptText ? (
-                      <Text numberOfLines={2} style={styles.noteTranscript}>
-                        {note.transcriptText}
-                      </Text>
-                    ) : null}
-
-                    {note.lastError ? (
-                      <Text style={styles.noteErrorText}>{note.lastError}</Text>
-                    ) : null}
-
-                    {isActive ? (
-                      <Text style={styles.notePlaybackStatus}>
-                        {!playerStatus.isLoaded && queuedPlaybackId === note.id
-                          ? 'Loading audio...'
-                          : playerStatus.playing
-                            ? `Playing ${formatPlaybackTime(playerStatus.currentTime)} / ${formatPlaybackTime(playerStatus.duration)}`
-                            : 'Paused'}
-                      </Text>
-                    ) : null}
-                  </View>
-
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={isBusy || recorderState.isRecording}
-                    onPress={() => {
-                      void handleDeleteNote(note);
-                    }}
-                    style={({ pressed }) => [
-                      styles.deleteIconButton,
-                      isDeleting && styles.deleteIconButtonBusy,
-                      (pressed || isBusy || recorderState.isRecording) &&
-                        styles.actionPressed,
-                    ]}
-                  >
-                    {isDeleting ? (
-                      <ActivityIndicator color="#8f2f24" size="small" />
-                    ) : (
-                      <Icon color="#8f2f24" name="trash-2" size={18} />
-                    )}
-                  </Pressable>
-                </View>
-              );
-            })
-          )}
-        </ScrollView>
-      ) : currentTab === 'records' ? (
-        <View style={styles.recordsContent}>
-          <View style={styles.recordsPlaceholder}>
-            <View style={styles.recordsIconWrap}>
-              <Icon color="#7d6552" name="file-text" size={18} />
-            </View>
-            <Text style={styles.recordsTitle}>Records</Text>
-            <Text style={styles.recordsBody}>
-              {completedTranscriptCount === 0
-                ? 'Transcribed notes will appear here after sync is completed.'
-                : `${completedTranscriptCount} synced notes are ready for the next record-building step.`}
-            </Text>
+              />
+              <Icon color="#1b1412" name="settings" size={18} />
+            </Pressable>
           </View>
         </View>
-      ) : (
-        <ScrollView
-          style={styles.contentScroll}
-          contentContainerStyle={styles.content}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-        >
-          {!isSupabaseConfigured ? (
-            <View style={styles.authConfigCard}>
-              <Text style={styles.authConfigTitle}>Supabase setup required</Text>
-              <Text style={styles.authConfigBody}>
-                Add the project URL and anon key in `mobile/.env`, then enable Email
-                auth in Supabase.
-              </Text>
-            </View>
-          ) : null}
 
-          <View style={styles.accountCard}>
-            <View style={styles.accountHeader}>
-              <View style={styles.accountHeaderIconWrap}>
-                <Icon
-                  color={accountSession ? '#fff8ec' : '#7d6552'}
-                  name={accountSession ? 'check-circle' : 'mail'}
-                  size={18}
-                />
-              </View>
-              <View style={styles.accountHeaderCopy}>
-                <Text style={styles.accountLabel}>
-                  {accountSession ? 'Signed in' : 'Server account'}
-                </Text>
-                <Text style={styles.accountTitle}>
-                  {accountSession ? accountEmail ?? 'Email account' : 'Email and password'}
-                </Text>
-              </View>
-            </View>
+        {currentTab === 'notes' ? (
+          <NotesScreen
+            accountConnected={Boolean(accountSession)}
+            activeSyncNote={activeSyncNote}
+            isAuthBusy={isAuthBusy}
+            isBusy={isBusy}
+            isRecording={recorderState.isRecording}
+            isSyncing={isSyncing}
+            noteCountLabel={noteCountLabel}
+            notes={savedNotes}
+            onOpenNote={setSelectedNoteId}
+            onSyncPress={() => {
+              void handleSyncPress();
+            }}
+            pendingSyncCount={pendingSyncCount}
+            pendingSyncLabel={pendingSyncLabel}
+            shouldShowSyncPanel={shouldShowSyncPanel}
+            syncNotice={syncNotice}
+            syncProgressLabel={syncProgressLabel}
+          />
+        ) : (
+          <DocumentsScreen
+            completedTranscriptCount={completedTranscriptCount}
+            pendingSyncCount={pendingSyncCount}
+          />
+        )}
 
-            <Text style={styles.accountBody}>
-              {accountSession
-                ? 'This account is used for manual sync. Local recording remains available either way.'
-                : 'Create an account with email and password, or sign in with an existing one. Recording still stays local until you tap sync.'}
-            </Text>
+        <View style={styles.bottomDock}>
+          <BottomTabButton
+            icon="disc"
+            isActive={currentTab === 'notes'}
+            label="Notes"
+            onPress={() => {
+              setCurrentTab('notes');
+            }}
+          />
 
-            {authNotice ? <NoticeBanner notice={authNotice} /> : null}
+          <View style={styles.bottomDockSpacer} />
 
-            {accountSession ? (
-              <>
-                <View style={styles.accountDetails}>
-                  <Text style={styles.accountDetailLabel}>Account email</Text>
-                  <Text style={styles.accountDetailValue}>
-                    {accountEmail ?? 'Email unavailable'}
-                  </Text>
-                </View>
+          <BottomTabButton
+            icon="book-open"
+            isActive={currentTab === 'records'}
+            label="Documents"
+            onPress={() => {
+              setCurrentTab('records');
+            }}
+          />
+        </View>
 
-                <View style={styles.accountDetails}>
-                  <Text style={styles.accountDetailLabel}>Supabase user id</Text>
-                  <Text style={styles.accountDetailValue}>
-                    {shortenUserId(accountSession.user.id)}
-                  </Text>
-                </View>
-
-                <View style={styles.accountDetails}>
-                  <Text style={styles.accountDetailLabel}>Created</Text>
-                  <Text style={styles.accountDetailValue}>
-                    {formatDate(accountSession.user.created_at)}
-                  </Text>
-                </View>
-
-                <Pressable
-                  accessibilityRole="button"
-                  disabled={authAction === 'signout'}
-                  onPress={() => {
-                    void handleSignOut();
-                  }}
-                  style={({ pressed }) => [
-                    styles.secondaryButton,
-                    (pressed || authAction === 'signout') && styles.actionPressed,
-                  ]}
-                >
-                  {authAction === 'signout' ? (
-                    <ActivityIndicator color="#8f2f24" />
-                  ) : (
-                    <>
-                      <Icon color="#8f2f24" name="log-out" size={16} />
-                      <Text style={styles.secondaryButtonLabel}>Sign out</Text>
-                    </>
-                  )}
-                </Pressable>
-              </>
-            ) : (
-              <>
-                <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>Email</Text>
-                  <TextInput
-                    autoCapitalize="none"
-                    autoComplete="email"
-                    keyboardType="email-address"
-                    onChangeText={setEmailInput}
-                    placeholder="name@example.com"
-                    placeholderTextColor="#8f7b69"
-                    style={styles.textInput}
-                    value={emailInput}
-                  />
-                </View>
-
-                <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>Password</Text>
-                  <TextInput
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    onChangeText={setPasswordInput}
-                    placeholder="At least 6 characters"
-                    placeholderTextColor="#8f7b69"
-                    secureTextEntry
-                    style={styles.textInput}
-                    textContentType="password"
-                    value={passwordInput}
-                  />
-                </View>
-
-                <Pressable
-                  accessibilityRole="button"
-                  disabled={authAction === 'signin'}
-                  onPress={() => {
-                    void handleSignIn();
-                  }}
-                  style={({ pressed }) => [
-                    styles.primaryButton,
-                    (pressed || authAction === 'signin') && styles.actionPressed,
-                  ]}
-                >
-                  {authAction === 'signin' ? (
-                    <ActivityIndicator color="#fff8ec" />
-                  ) : (
-                    <>
-                      <Icon color="#fff8ec" name="mail" size={16} />
-                      <Text style={styles.primaryButtonLabel}>Sign in</Text>
-                    </>
-                  )}
-                </Pressable>
-
-                <Pressable
-                  accessibilityRole="button"
-                  disabled={authAction === 'signup'}
-                  onPress={() => {
-                    void handleCreateAccount();
-                  }}
-                  style={({ pressed }) => [
-                    styles.secondaryButton,
-                    (pressed || authAction === 'signup') && styles.actionPressed,
-                  ]}
-                >
-                  {authAction === 'signup' ? (
-                    <ActivityIndicator color="#8f2f24" />
-                  ) : (
-                    <>
-                      <Icon color="#8f2f24" name="user" size={16} />
-                      <Text style={styles.secondaryButtonLabel}>Create account</Text>
-                    </>
-                  )}
-                </Pressable>
-
-                <Text style={styles.accountHint}>
-                  Local notes stay on the device. For the smoothest development flow,
-                  disable `Confirm email` in Supabase Email auth so new accounts can
-                  sign in immediately.
-                </Text>
-              </>
-            )}
-          </View>
-        </ScrollView>
-      )}
-    </View>
-  );
-}
-
-function TabButton({
-  icon,
-  isActive,
-  label,
-  onPress,
-}: {
-  icon: 'mic' | 'file-text' | 'user';
-  isActive: boolean;
-  label: string;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.tabButton,
-        isActive ? styles.tabButtonActive : styles.tabButtonIdle,
-        pressed && styles.actionPressed,
-      ]}
-    >
-      <View style={styles.tabButtonInner}>
-        <Icon
-          color={isActive ? '#231710' : '#6e5848'}
-          name={icon}
-          size={16}
-        />
-        <Text
-          style={[
-            styles.tabButtonLabel,
-            isActive ? styles.tabButtonLabelActive : null,
+        <Pressable
+          accessibilityRole="button"
+          disabled={isSaving}
+          onPress={() => {
+            setErrorMessage(null);
+            setIsRecorderOpen(true);
+          }}
+          style={({ pressed }) => [
+            styles.recordFab,
+            (pressed || isSaving) && styles.actionPressed,
           ]}
         >
-          {label}
-        </Text>
-      </View>
-    </Pressable>
-  );
-}
+          <View style={styles.recordFabInner}>
+            <Icon color="#fff7ef" name="mic" size={20} />
+            <Text style={styles.recordFabLabel}>Record</Text>
+          </View>
+        </Pressable>
+      </SafeAreaView>
 
-function NoticeBanner({ notice }: { notice: AppNotice }) {
-  return (
-    <View
-      style={[
-        styles.noticeBanner,
-        notice.tone === 'error'
-          ? styles.noticeBannerError
-          : notice.tone === 'success'
-            ? styles.noticeBannerSuccess
-            : styles.noticeBannerInfo,
-      ]}
-    >
-      <Icon
-        color={notice.tone === 'error' ? '#8f2f24' : '#3b5c4f'}
-        name={notice.tone === 'error' ? 'alert-circle' : 'check-circle'}
-        size={16}
+      <NoteDetailSheet
+        deletingNoteId={deletingNoteId}
+        errorNotice={errorNotice}
+        isBusy={isBusy}
+        isPlayerLoaded={playerStatus.isLoaded}
+        isPlaying={Boolean(selectedNote && activeNoteId === selectedNote.id && playerStatus.playing)}
+        isRecording={recorderState.isRecording}
+        note={selectedNote}
+        onClose={() => {
+          setSelectedNoteId(null);
+        }}
+        onDelete={(note) => {
+          void handleDeleteNote(note);
+        }}
+        onTogglePlayback={(note) => {
+          void handleTogglePlayback(note);
+        }}
+        playbackDuration={playerStatus.duration}
+        playbackProgress={playbackProgress}
+        playbackTime={playerStatus.currentTime}
+        queuedPlaybackId={queuedPlaybackId}
       />
-      <Text
-        style={[
-          styles.noticeText,
-          notice.tone === 'error'
-            ? styles.noticeTextError
-            : styles.noticeTextSuccess,
-        ]}
-      >
-        {notice.text}
-      </Text>
+
+      <RecorderSheet
+        errorNotice={errorNotice}
+        hasRecordingPermission={hasRecordingPermission}
+        isLoading={isLoading}
+        isOpen={isRecorderOpen}
+        isRecording={recorderState.isRecording}
+        isSaving={isSaving}
+        onClose={() => {
+          setIsRecorderOpen(false);
+        }}
+        onStartRecording={() => {
+          void handleStartRecording();
+        }}
+        onStopRecording={() => {
+          void handleStopRecording();
+        }}
+        pulseOpacity={pulseOpacity}
+        pulseScale={pulseScale}
+        timerLabel={formatDuration(recorderState.durationMillis)}
+      />
+
+      <SettingsSheet
+        authAction={authAction}
+        authNotice={authNotice}
+        emailInput={emailInput}
+        isSupabaseConfigured={isSupabaseConfigured}
+        onClose={() => {
+          setIsSettingsOpen(false);
+        }}
+        onCreateAccount={() => {
+          void handleCreateAccount();
+        }}
+        onEmailChange={setEmailInput}
+        onPasswordChange={setPasswordInput}
+        onSignIn={() => {
+          void handleSignIn();
+        }}
+        onSignOut={() => {
+          void handleSignOut();
+        }}
+        passwordInput={passwordInput}
+        session={accountSession}
+        visible={isSettingsOpen}
+      />
     </View>
   );
-}
-
-function formatDuration(durationMillis: number) {
-  const totalSeconds = Math.max(0, Math.round(durationMillis / 1000));
-  return formatSeconds(totalSeconds);
-}
-
-function formatPlaybackTime(durationSeconds: number) {
-  const totalSeconds = Math.max(0, Math.round(durationSeconds));
-  return formatSeconds(totalSeconds);
-}
-
-function formatSeconds(totalSeconds: number) {
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-
-  return `${minutes}:${String(seconds).padStart(2, '0')}`;
-}
-
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(new Date(value));
-}
-
-function formatFileSize(sizeBytes: number | null) {
-  if (!sizeBytes) {
-    return 'Size unavailable';
-  }
-
-  if (sizeBytes < 1024 * 1024) {
-    return `${(sizeBytes / 1024).toFixed(sizeBytes < 10 * 1024 ? 1 : 0)} KB`;
-  }
-
-  return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function isVoiceNotePendingSync(note: VoiceNote) {
-  return note.syncStatus !== 'synced' || note.processingStatus !== 'complete';
-}
-
-function getVoiceNoteStatusLabel(note: VoiceNote) {
-  if (note.syncStatus === 'uploading') {
-    return 'Uploading';
-  }
-
-  if (note.processingStatus === 'transcribing') {
-    return 'Transcribing';
-  }
-
-  if (note.processingStatus === 'failed' || note.syncStatus === 'failed') {
-    return 'Needs retry';
-  }
-
-  if (note.syncStatus === 'uploaded') {
-    return 'Uploaded';
-  }
-
-  if (note.processingStatus === 'complete' && note.syncStatus === 'synced') {
-    return 'Synced';
-  }
-
-  return 'Waiting to sync';
-}
-
-function getStatusBadgeStyle(note: VoiceNote) {
-  if (note.processingStatus === 'complete' && note.syncStatus === 'synced') {
-    return styles.noteStatusBadgeSuccess;
-  }
-
-  if (note.processingStatus === 'failed' || note.syncStatus === 'failed') {
-    return styles.noteStatusBadgeError;
-  }
-
-  return styles.noteStatusBadgePending;
 }
 
 function normalizeEmail(value: string) {
@@ -1211,14 +897,6 @@ function normalizePassword(value: string) {
   return normalizedValue;
 }
 
-function shortenUserId(value: string) {
-  if (value.length <= 14) {
-    return value;
-  }
-
-  return `${value.slice(0, 8)}...${value.slice(-4)}`;
-}
-
 function getErrorMessage(error: unknown, fallback: string) {
   if (error instanceof Error && error.message) {
     return error.message;
@@ -1230,523 +908,126 @@ function getErrorMessage(error: unknown, fallback: string) {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: '#ece1cf',
-    paddingTop: 56,
+    backgroundColor: '#f4ece2',
   },
-  appBar: {
+  safeArea: {
+    flex: 1,
+  },
+  backgroundGlowTop: {
+    backgroundColor: '#f0d4c4',
+    borderRadius: 220,
+    height: 260,
+    opacity: 0.7,
+    position: 'absolute',
+    right: -70,
+    top: -90,
+    width: 260,
+  },
+  backgroundGlowBottom: {
+    backgroundColor: '#ddd6f7',
+    borderRadius: 240,
+    bottom: -120,
+    height: 280,
+    left: -90,
+    opacity: 0.42,
+    position: 'absolute',
+    width: 280,
+  },
+  header: {
     alignItems: 'center',
     flexDirection: 'row',
     justifyContent: 'space-between',
     paddingHorizontal: 20,
+    paddingTop: 10,
   },
-  appBarStatus: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 10,
+  headerCopy: {
+    gap: 6,
   },
-  appBarStatusLabel: {
-    color: '#7d6552',
+  headerEyebrow: {
+    color: '#8c7566',
     fontSize: 13,
     fontWeight: '700',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
   },
   appName: {
-    color: '#20160f',
-    fontSize: 28,
+    color: '#1e1512',
+    fontSize: 32,
     fontWeight: '800',
-    letterSpacing: -0.6,
+    letterSpacing: -1,
   },
-  appSubhead: {
-    color: '#7d6552',
-    fontSize: 13,
-    fontWeight: '600',
-    letterSpacing: 0.8,
-    marginTop: 4,
-    textTransform: 'uppercase',
-  },
-  tabs: {
-    backgroundColor: '#e0d1bb',
-    borderRadius: 20,
-    flexDirection: 'row',
-    gap: 10,
-    marginHorizontal: 20,
-    marginTop: 20,
-    padding: 6,
-  },
-  tabButton: {
-    borderRadius: 16,
-    flex: 1,
-    paddingVertical: 12,
-  },
-  tabButtonInner: {
+  headerActions: {
     alignItems: 'center',
     flexDirection: 'row',
-    gap: 8,
+    gap: 12,
+  },
+  accountShortcut: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 247, 239, 0.94)',
+    borderColor: 'rgba(154, 126, 110, 0.18)',
+    borderRadius: 22,
+    borderWidth: 1,
+    height: 44,
     justifyContent: 'center',
+    position: 'relative',
+    width: 44,
   },
-  tabButtonActive: {
-    backgroundColor: '#fff8ec',
+  accountShortcutDot: {
+    borderRadius: 4,
+    height: 8,
+    position: 'absolute',
+    right: 9,
+    top: 9,
+    width: 8,
   },
-  tabButtonIdle: {
-    backgroundColor: 'transparent',
+  accountShortcutDotActive: {
+    backgroundColor: '#2c9f67',
   },
-  tabButtonLabel: {
-    color: '#6e5848',
-    fontSize: 15,
-    fontWeight: '700',
-    textAlign: 'center',
+  accountShortcutDotIdle: {
+    backgroundColor: '#c8b5a8',
   },
-  tabButtonLabelActive: {
-    color: '#231710',
-  },
-  contentScroll: {
-    flex: 1,
-  },
-  content: {
-    gap: 18,
-    paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 36,
-  },
-  recorderPanel: {
-    backgroundColor: '#fff8ec',
-    borderColor: '#d8c3a5',
+  bottomDock: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 247, 239, 0.96)',
+    borderColor: 'rgba(155, 132, 118, 0.18)',
     borderRadius: 28,
     borderWidth: 1,
-    gap: 12,
-    padding: 20,
-  },
-  recorderTop: {
-    alignItems: 'center',
+    bottom: 22,
     flexDirection: 'row',
     justifyContent: 'space-between',
+    left: 20,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    position: 'absolute',
+    right: 20,
   },
-  panelLabel: {
-    color: '#87684b',
-    fontSize: 13,
-    fontWeight: '700',
-    letterSpacing: 0.9,
-    textTransform: 'uppercase',
+  bottomDockSpacer: {
+    width: 104,
   },
-  timer: {
-    color: '#20160f',
-    fontSize: 44,
-    fontWeight: '800',
-    letterSpacing: -1.5,
-    marginTop: 6,
-  },
-  recordAction: {
+  recordFab: {
     alignItems: 'center',
-    borderRadius: 24,
-    height: 88,
+    backgroundColor: '#ab4d38',
+    borderRadius: 999,
+    bottom: 34,
+    height: 74,
     justifyContent: 'center',
-    width: 88,
+    left: '50%',
+    marginLeft: -37,
+    position: 'absolute',
+    width: 74,
   },
-  recordActionStart: {
-    backgroundColor: '#a33d30',
+  recordFabInner: {
+    alignItems: 'center',
+    gap: 4,
   },
-  recordActionStop: {
-    backgroundColor: '#62251d',
+  recordFabLabel: {
+    color: '#fff7ef',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
   },
   actionPressed: {
     opacity: 0.82,
-  },
-  recordActionLabel: {
-    color: '#fff8ec',
-    fontSize: 13,
-    fontWeight: '700',
-    marginTop: 6,
-  },
-  recorderHint: {
-    color: '#6c5948',
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  errorText: {
-    color: '#8f2f24',
-    fontSize: 14,
-    fontWeight: '600',
-    lineHeight: 20,
-  },
-  syncPanel: {
-    backgroundColor: '#fff8ec',
-    borderColor: '#dcc7a9',
-    borderRadius: 28,
-    borderWidth: 1,
-    gap: 14,
-    padding: 20,
-  },
-  syncTop: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 14,
-  },
-  syncTitleWrap: {
-    alignItems: 'center',
-    flex: 1,
-    flexDirection: 'row',
-    gap: 12,
-  },
-  syncIconWrap: {
-    alignItems: 'center',
-    backgroundColor: '#e3d4bd',
-    borderRadius: 16,
-    height: 42,
-    justifyContent: 'center',
-    width: 42,
-  },
-  syncTitle: {
-    color: '#20160f',
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  syncMeta: {
-    color: '#7d6552',
-    fontSize: 13,
-    marginTop: 4,
-  },
-  syncButton: {
-    alignItems: 'center',
-    backgroundColor: '#9b3d2f',
-    borderRadius: 18,
-    justifyContent: 'center',
-    minHeight: 48,
-    paddingHorizontal: 18,
-  },
-  syncButtonLabel: {
-    color: '#fff8ec',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  syncBody: {
-    color: '#625244',
-    fontSize: 15,
-    lineHeight: 22,
-  },
-  noticeBanner: {
-    alignItems: 'flex-start',
-    borderRadius: 18,
-    flexDirection: 'row',
-    gap: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-  },
-  noticeBannerError: {
-    backgroundColor: '#f3ddd3',
-  },
-  noticeBannerInfo: {
-    backgroundColor: '#d9e6de',
-  },
-  noticeBannerSuccess: {
-    backgroundColor: '#d9e6de',
-  },
-  noticeText: {
-    flex: 1,
-    fontSize: 14,
-    fontWeight: '600',
-    lineHeight: 20,
-  },
-  noticeTextError: {
-    color: '#8f2f24',
-  },
-  noticeTextSuccess: {
-    color: '#335548',
-  },
-  sectionHeader: {
-    paddingHorizontal: 2,
-    paddingTop: 4,
-  },
-  sectionTitle: {
-    color: '#20160f',
-    fontSize: 22,
-    fontWeight: '700',
-  },
-  sectionMeta: {
-    color: '#7d6552',
-    fontSize: 14,
-    marginTop: 4,
-  },
-  emptyCard: {
-    alignItems: 'flex-start',
-    backgroundColor: '#f7eedf',
-    borderRadius: 24,
-    gap: 8,
-    padding: 20,
-  },
-  emptyIconWrap: {
-    alignItems: 'center',
-    backgroundColor: '#e3d4bd',
-    borderRadius: 14,
-    height: 36,
-    justifyContent: 'center',
-    marginBottom: 4,
-    width: 36,
-  },
-  emptyTitle: {
-    color: '#20160f',
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  emptyBody: {
-    color: '#625244',
-    fontSize: 15,
-    lineHeight: 22,
-  },
-  noteCard: {
-    alignItems: 'center',
-    backgroundColor: '#fff8ec',
-    borderColor: '#dcc7a9',
-    borderRadius: 24,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 16,
-  },
-  iconButton: {
-    alignItems: 'center',
-    borderRadius: 18,
-    height: 54,
-    justifyContent: 'center',
-    width: 54,
-  },
-  iconButtonIdle: {
-    backgroundColor: '#e8dac2',
-  },
-  iconButtonActive: {
-    backgroundColor: '#9b3d2f',
-  },
-  noteMeta: {
-    flex: 1,
-    gap: 6,
-  },
-  noteTopline: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  noteTitle: {
-    color: '#20160f',
-    fontSize: 17,
-    fontWeight: '700',
-  },
-  noteDuration: {
-    color: '#7d3529',
-    fontSize: 18,
-    fontWeight: '800',
-  },
-  noteSecondary: {
-    color: '#625244',
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  noteStatusRow: {
-    flexDirection: 'row',
-  },
-  noteStatusBadge: {
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-  },
-  noteStatusBadgePending: {
-    backgroundColor: '#e8dac2',
-  },
-  noteStatusBadgeSuccess: {
-    backgroundColor: '#d9e6de',
-  },
-  noteStatusBadgeError: {
-    backgroundColor: '#f3ddd3',
-  },
-  noteStatusText: {
-    color: '#514234',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  noteTranscript: {
-    color: '#3d2d20',
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  noteErrorText: {
-    color: '#8f2f24',
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  notePlaybackStatus: {
-    color: '#8f2f24',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  deleteIconButton: {
-    alignItems: 'center',
-    backgroundColor: '#f3ddd3',
-    borderRadius: 16,
-    height: 44,
-    justifyContent: 'center',
-    width: 44,
-  },
-  deleteIconButtonBusy: {
-    backgroundColor: '#e4c0b3',
-  },
-  recordsContent: {
-    flex: 1,
-    justifyContent: 'center',
-    paddingHorizontal: 20,
-  },
-  recordsPlaceholder: {
-    alignItems: 'flex-start',
-    backgroundColor: '#fff8ec',
-    borderColor: '#dcc7a9',
-    borderRadius: 28,
-    borderWidth: 1,
-    gap: 10,
-    padding: 24,
-  },
-  recordsIconWrap: {
-    alignItems: 'center',
-    backgroundColor: '#e3d4bd',
-    borderRadius: 16,
-    height: 40,
-    justifyContent: 'center',
-    marginBottom: 2,
-    width: 40,
-  },
-  recordsTitle: {
-    color: '#20160f',
-    fontSize: 24,
-    fontWeight: '700',
-  },
-  recordsBody: {
-    color: '#625244',
-    fontSize: 16,
-    lineHeight: 24,
-  },
-  authConfigCard: {
-    backgroundColor: '#f3ddd3',
-    borderRadius: 24,
-    gap: 8,
-    padding: 20,
-  },
-  authConfigTitle: {
-    color: '#62251d',
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  authConfigBody: {
-    color: '#7a392d',
-    fontSize: 14,
-    lineHeight: 22,
-  },
-  accountCard: {
-    backgroundColor: '#fff8ec',
-    borderColor: '#dcc7a9',
-    borderRadius: 28,
-    borderWidth: 1,
-    gap: 16,
-    padding: 20,
-  },
-  accountHeader: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 14,
-  },
-  accountHeaderIconWrap: {
-    alignItems: 'center',
-    backgroundColor: '#e3d4bd',
-    borderRadius: 18,
-    height: 46,
-    justifyContent: 'center',
-    width: 46,
-  },
-  accountHeaderCopy: {
-    flex: 1,
-  },
-  accountLabel: {
-    color: '#87684b',
-    fontSize: 13,
-    fontWeight: '700',
-    letterSpacing: 0.9,
-    textTransform: 'uppercase',
-  },
-  accountTitle: {
-    color: '#20160f',
-    fontSize: 24,
-    fontWeight: '700',
-    marginTop: 4,
-  },
-  accountBody: {
-    color: '#625244',
-    fontSize: 15,
-    lineHeight: 22,
-  },
-  accountDetails: {
-    gap: 4,
-  },
-  accountDetailLabel: {
-    color: '#87684b',
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 0.8,
-    textTransform: 'uppercase',
-  },
-  accountDetailValue: {
-    color: '#20160f',
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  inputGroup: {
-    gap: 8,
-  },
-  inputLabel: {
-    color: '#87684b',
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 0.8,
-    textTransform: 'uppercase',
-  },
-  textInput: {
-    backgroundColor: '#f7eedf',
-    borderColor: '#dcc7a9',
-    borderRadius: 18,
-    borderWidth: 1,
-    color: '#20160f',
-    fontSize: 16,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-  },
-  primaryButton: {
-    alignItems: 'center',
-    backgroundColor: '#9b3d2f',
-    borderRadius: 18,
-    flexDirection: 'row',
-    gap: 8,
-    justifyContent: 'center',
-    minHeight: 52,
-    paddingHorizontal: 18,
-  },
-  primaryButtonLabel: {
-    color: '#fff8ec',
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  secondaryButton: {
-    alignItems: 'center',
-    backgroundColor: '#f3ddd3',
-    borderRadius: 18,
-    flexDirection: 'row',
-    gap: 8,
-    justifyContent: 'center',
-    minHeight: 50,
-    paddingHorizontal: 18,
-  },
-  secondaryButtonLabel: {
-    color: '#8f2f24',
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  accountHint: {
-    color: '#6c5948',
-    fontSize: 14,
-    lineHeight: 20,
   },
 });
