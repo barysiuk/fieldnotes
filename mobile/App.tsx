@@ -28,6 +28,7 @@ import {
   signUpWithEmailPassword,
   supabase,
 } from './src/lib/supabase';
+import { syncVoiceNotesManually } from './src/lib/noteSync';
 import {
   deleteVoiceNote,
   initializeVoiceNotesStore,
@@ -58,6 +59,7 @@ export default function App() {
   const [savedNotes, setSavedNotes] = useState<VoiceNote[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
   const [deletingNoteId, setDeletingNoteId] = useState<string | null>(null);
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
   const [queuedPlaybackId, setQueuedPlaybackId] = useState<string | null>(null);
@@ -73,6 +75,7 @@ export default function App() {
   const [emailInput, setEmailInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
   const [authNotice, setAuthNotice] = useState<AppNotice | null>(null);
+  const [syncNotice, setSyncNotice] = useState<AppNotice | null>(null);
 
   const activeNote = activeNoteId
     ? savedNotes.find((note) => note.id === activeNoteId) ?? null
@@ -83,14 +86,20 @@ export default function App() {
   });
   const playerStatus = useAudioPlayerStatus(player);
   const accountEmail = accountSession?.user.email ?? null;
-  const isBusy = isLoading || isSaving || deletingNoteId !== null;
+  const pendingSyncCount = savedNotes.filter(isVoiceNotePendingSync).length;
+  const completedTranscriptCount = savedNotes.filter(
+    (note) => note.processingStatus === 'complete'
+  ).length;
+  const isBusy = isLoading || isSaving || isSyncing || deletingNoteId !== null;
   const isAuthBusy = isAuthLoading || authAction !== null;
   const noteCountLabel =
     savedNotes.length === 1 ? '1 note' : `${savedNotes.length} notes`;
   const syncCountLabel =
-    savedNotes.length === 1
-      ? '1 local note waiting for sync'
-      : `${savedNotes.length} local notes waiting for sync`;
+    pendingSyncCount === 0
+      ? 'All local notes are already synced'
+      : pendingSyncCount === 1
+        ? '1 note waiting for sync'
+        : `${pendingSyncCount} notes waiting for sync`;
 
   useEffect(() => {
     let isMounted = true;
@@ -216,6 +225,7 @@ export default function App() {
 
   async function handleStartRecording() {
     setErrorMessage(null);
+    setSyncNotice(null);
 
     try {
       let granted = hasRecordingPermission;
@@ -251,6 +261,7 @@ export default function App() {
     }
 
     setErrorMessage(null);
+    setSyncNotice(null);
     setIsSaving(true);
 
     const durationMillis = recorderState.durationMillis;
@@ -319,7 +330,7 @@ export default function App() {
   }
 
   async function handleDeleteNote(note: VoiceNote) {
-    if (recorderState.isRecording || isSaving) {
+    if (recorderState.isRecording || isSaving || isSyncing) {
       return;
     }
 
@@ -349,6 +360,7 @@ export default function App() {
     const normalizedPassword = normalizePassword(passwordInput);
 
     setAuthNotice(null);
+    setSyncNotice(null);
 
     if (!normalizedEmail) {
       setAuthNotice({
@@ -385,7 +397,7 @@ export default function App() {
       setAccountSession(session);
       setAuthNotice({
         tone: 'success',
-        text: `Signed in as ${normalizedEmail}. Server sync is now unlocked.`,
+        text: `Signed in as ${normalizedEmail}. Manual sync is now available.`,
       });
     } catch (error) {
       setAuthNotice({
@@ -402,6 +414,7 @@ export default function App() {
     const normalizedPassword = normalizePassword(passwordInput);
 
     setAuthNotice(null);
+    setSyncNotice(null);
 
     if (!normalizedEmail) {
       setAuthNotice({
@@ -463,6 +476,7 @@ export default function App() {
     }
 
     setAuthNotice(null);
+    setSyncNotice(null);
     setAuthAction('signout');
 
     try {
@@ -476,7 +490,7 @@ export default function App() {
       setPasswordInput('');
       setAuthNotice({
         tone: 'info',
-        text: 'Signed out. Local notes remain on this device until sync is added.',
+        text: 'Signed out. Local notes remain on this device until you sign in again.',
       });
     } catch (error) {
       setAuthNotice({
@@ -488,11 +502,12 @@ export default function App() {
     }
   }
 
-  function handleSyncPress() {
+  async function handleSyncPress() {
     setAuthNotice(null);
+    setSyncNotice(null);
 
     if (savedNotes.length === 0) {
-      setAuthNotice({
+      setSyncNotice({
         tone: 'info',
         text: 'Record at least one note before syncing to the server.',
       });
@@ -503,7 +518,7 @@ export default function App() {
       setCurrentTab('account');
       setAuthNotice({
         tone: 'error',
-        text: 'Supabase auth is not configured yet. Finish the project setup before testing sync.',
+        text: 'Supabase sync is not configured yet. Add the project URL and anon key in mobile/.env first.',
       });
       return;
     }
@@ -512,16 +527,61 @@ export default function App() {
       setCurrentTab('account');
       setAuthNotice({
         tone: 'info',
-        text: 'Sign in with email before syncing notes to the server. Local recording still works without an account.',
+        text: 'Sign in with email before syncing notes to the server.',
       });
       return;
     }
 
-    setCurrentTab('account');
-    setAuthNotice({
-      tone: 'success',
-      text: `${syncCountLabel}. The account is connected, so server upload is the next feature to implement.`,
-    });
+    setIsSyncing(true);
+
+    try {
+      const result = await syncVoiceNotesManually();
+      await refreshNotes();
+      const refreshedNotes = await listVoiceNotes();
+      const firstFailedNote = refreshedNotes.find((note) => Boolean(note.lastError));
+
+      if (result.status === 'noop') {
+        setSyncNotice({
+          tone: 'info',
+          text: 'Nothing to sync. All saved notes are already uploaded and transcribed.',
+        });
+        return;
+      }
+
+      if (result.status === 'success') {
+        setSyncNotice({
+          tone: 'success',
+          text:
+            result.syncedCount === 1
+              ? '1 note synced and transcribed successfully.'
+              : `${result.syncedCount} notes synced and transcribed successfully.`,
+        });
+        return;
+      }
+
+      if (result.status === 'partial') {
+        setSyncNotice({
+          tone: 'info',
+          text: `${result.syncedCount} notes synced successfully. ${result.failedCount} still need attention.`,
+        });
+        return;
+      }
+
+      setSyncNotice({
+        tone: 'error',
+        text:
+          result.failedCount === 1
+            ? `Sync failed for 1 note. ${firstFailedNote?.lastError ?? 'Review the note status and try again.'}`
+            : `Sync failed for ${result.failedCount} notes. ${firstFailedNote?.lastError ?? 'Review the note statuses and try again.'}`,
+      });
+    } catch (error) {
+      setSyncNotice({
+        tone: 'error',
+        text: getErrorMessage(error, 'Could not sync notes to the server.'),
+      });
+    } finally {
+      setIsSyncing(false);
+    }
   }
 
   return (
@@ -647,30 +707,32 @@ export default function App() {
 
               <Pressable
                 accessibilityRole="button"
-                disabled={recorderState.isRecording || isSaving || deletingNoteId !== null}
-                onPress={handleSyncPress}
+                disabled={isBusy || isAuthBusy}
+                onPress={() => {
+                  void handleSyncPress();
+                }}
                 style={({ pressed }) => [
                   styles.syncButton,
-                  (pressed ||
-                    recorderState.isRecording ||
-                    isSaving ||
-                    deletingNoteId !== null) &&
-                    styles.actionPressed,
+                  (pressed || isBusy || isAuthBusy) && styles.actionPressed,
                 ]}
               >
-                <Text style={styles.syncButtonLabel}>
-                  {accountSession ? 'Check sync' : 'Connect account'}
-                </Text>
+                {isSyncing ? (
+                  <ActivityIndicator color="#fff8ec" />
+                ) : (
+                  <Text style={styles.syncButtonLabel}>
+                    {accountSession ? 'Sync now' : 'Connect account'}
+                  </Text>
+                )}
               </Pressable>
             </View>
 
             <Text style={styles.syncBody}>
               {accountSession
-                ? `Signed in as ${accountEmail ?? 'your account'}. Recording remains local-first, and sync can now be tied to this account.`
+                ? `Signed in as ${accountEmail ?? 'your account'}. Tap sync when you want to upload pending notes and run transcription on the server.`
                 : 'You can keep recording offline with no account. Sign-in is only required when you want to sync notes to the server.'}
             </Text>
 
-            {authNotice ? <NoticeBanner notice={authNotice} /> : null}
+            {syncNotice ? <NoticeBanner notice={syncNotice} /> : null}
           </View>
 
           <View style={styles.sectionHeader}>
@@ -733,6 +795,29 @@ export default function App() {
                       {formatDate(note.createdAt)} · {formatFileSize(note.sizeBytes)}
                     </Text>
 
+                    <View style={styles.noteStatusRow}>
+                      <View
+                        style={[
+                          styles.noteStatusBadge,
+                          getStatusBadgeStyle(note),
+                        ]}
+                      >
+                        <Text style={styles.noteStatusText}>
+                          {getVoiceNoteStatusLabel(note)}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {note.transcriptText ? (
+                      <Text numberOfLines={2} style={styles.noteTranscript}>
+                        {note.transcriptText}
+                      </Text>
+                    ) : null}
+
+                    {note.lastError ? (
+                      <Text style={styles.noteErrorText}>{note.lastError}</Text>
+                    ) : null}
+
                     {isActive ? (
                       <Text style={styles.notePlaybackStatus}>
                         {!playerStatus.isLoaded && queuedPlaybackId === note.id
@@ -776,7 +861,9 @@ export default function App() {
             </View>
             <Text style={styles.recordsTitle}>Records</Text>
             <Text style={styles.recordsBody}>
-              Context sheets will appear here after processing is added.
+              {completedTranscriptCount === 0
+                ? 'Transcribed notes will appear here after sync is completed.'
+                : `${completedTranscriptCount} synced notes are ready for the next record-building step.`}
             </Text>
           </View>
         </View>
@@ -818,8 +905,8 @@ export default function App() {
 
             <Text style={styles.accountBody}>
               {accountSession
-                ? 'This account will be used when you start syncing notes to Supabase. Local recording remains available either way.'
-                : 'Create an account with email and password, or sign in with an existing one. Recording still stays local until sync is added.'}
+                ? 'This account is used for manual sync. Local recording remains available either way.'
+                : 'Create an account with email and password, or sign in with an existing one. Recording still stays local until you tap sync.'}
             </Text>
 
             {authNotice ? <NoticeBanner notice={authNotice} /> : null}
@@ -1062,6 +1149,46 @@ function formatFileSize(sizeBytes: number | null) {
   }
 
   return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function isVoiceNotePendingSync(note: VoiceNote) {
+  return note.syncStatus !== 'synced' || note.processingStatus !== 'complete';
+}
+
+function getVoiceNoteStatusLabel(note: VoiceNote) {
+  if (note.syncStatus === 'uploading') {
+    return 'Uploading';
+  }
+
+  if (note.processingStatus === 'transcribing') {
+    return 'Transcribing';
+  }
+
+  if (note.processingStatus === 'failed' || note.syncStatus === 'failed') {
+    return 'Needs retry';
+  }
+
+  if (note.syncStatus === 'uploaded') {
+    return 'Uploaded';
+  }
+
+  if (note.processingStatus === 'complete' && note.syncStatus === 'synced') {
+    return 'Synced';
+  }
+
+  return 'Waiting to sync';
+}
+
+function getStatusBadgeStyle(note: VoiceNote) {
+  if (note.processingStatus === 'complete' && note.syncStatus === 'synced') {
+    return styles.noteStatusBadgeSuccess;
+  }
+
+  if (note.processingStatus === 'failed' || note.syncStatus === 'failed') {
+    return styles.noteStatusBadgeError;
+  }
+
+  return styles.noteStatusBadgePending;
 }
 
 function normalizeEmail(value: string) {
@@ -1412,6 +1539,38 @@ const styles = StyleSheet.create({
     color: '#625244',
     fontSize: 14,
     lineHeight: 20,
+  },
+  noteStatusRow: {
+    flexDirection: 'row',
+  },
+  noteStatusBadge: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  noteStatusBadgePending: {
+    backgroundColor: '#e8dac2',
+  },
+  noteStatusBadgeSuccess: {
+    backgroundColor: '#d9e6de',
+  },
+  noteStatusBadgeError: {
+    backgroundColor: '#f3ddd3',
+  },
+  noteStatusText: {
+    color: '#514234',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  noteTranscript: {
+    color: '#3d2d20',
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  noteErrorText: {
+    color: '#8f2f24',
+    fontSize: 13,
+    lineHeight: 18,
   },
   notePlaybackStatus: {
     color: '#8f2f24',

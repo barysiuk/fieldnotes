@@ -112,7 +112,7 @@ Offline-to-online synchronization is one of the most important technical areas i
 - Record locally first
 - Persist note and file metadata locally
 - Track per-note sync state
-- Upload when the user explicitly taps sync or when safe automatic sync conditions are met
+- Upload only when the user explicitly taps sync
 - Make server processing idempotent so retries do not create duplicates
 
 The backend should support this with durable identifiers, status fields, and retry-safe endpoints. The mobile app should treat sync as an explicit workflow and expose enough state for users to know whether a note is safely local only, uploading, processed, or ready.
@@ -147,8 +147,7 @@ This gives the product a clear architecture that matches the real workflow: capt
 
 ## Open Technical Questions
 
-- Should transcription happen entirely after upload, or should the app eventually support partial on-device transcription?
-- Should sync be only manual in v1, or should the app also support automatic background sync when the device reconnects?
+- Should the app eventually support optional on-device preview transcription, even though the canonical transcript is produced on the server?
 - What exact schema should be used for structured context sheet extraction?
 - What PDF generation method is most reliable within the chosen backend runtime?
 - Does the organization need editable context sheets after AI generation, or is read-only output acceptable for the first release?

@@ -45,7 +45,7 @@ Several principles should guide implementation decisions. First, the app must op
 
 ## Processing and Output
 
-At this stage, one technical question remains open: whether transcription and AI processing should happen entirely on the server after sync, partially on device, or through some hybrid approach. The product requirement is less about the exact architecture and more about the user outcome. From the user’s perspective, recordings should move from raw audio to transcript to generated context sheet with as little manual effort as possible. The implementation can be decided later, but the PRD should preserve this as an explicit product and technical decision point.
+For the next release, transcription and AI processing should happen on the server after a manual sync action. The mobile app remains responsible for offline capture and safe local storage, while the backend handles canonical transcription and later structured extraction. From the user’s perspective, recordings should move from raw audio to transcript to generated context sheet with as little manual effort as possible, but the trigger remains explicit: the user taps sync when they are ready.
 
 Once generated, context sheets should appear in a dedicated area of the application so users can easily find the completed outputs separate from raw recordings. A user should be able to open a context sheet in the app, review it, and use it as a formal record. The presentation format is still flexible. It may be shown as a rendered digital form, as a PDF preview, or in another readable representation, but the app should also support exporting or downloading the context sheet as a PDF because that format is likely to fit existing organizational workflows.
 
@@ -55,11 +55,11 @@ The product succeeds if it saves archaeologists meaningful documentation time, r
 
 ## First Release Scope
 
-For the first version, the focus should remain tight. Users need to be able to create an account, organize notes into simple collections, record voice notes offline, store those notes safely on the device, sync when they have connectivity, generate transcripts, and receive context sheets inside the app with PDF export capability. More advanced collaboration, complex project administration, and deep editing workflows can wait. The initial product should prove that an offline-first, voice-first workflow can turn field observations into structured archaeological documentation in a way that is practical, accessible, and trustworthy.
+For the first version, the focus should remain tight. Users need to be able to create an account, organize notes into simple collections, record voice notes offline, store those notes safely on the device, manually sync when they have connectivity, generate transcripts, and receive context sheets inside the app with PDF export capability. More advanced collaboration, complex project administration, and deep editing workflows can wait. The initial product should prove that an offline-first, voice-first workflow can turn field observations into structured archaeological documentation in a way that is practical, accessible, and trustworthy.
 
 ## Open Questions
 
-- Should audio transcription happen on-device, on the server, or through a hybrid model?
+- Should the app eventually support optional on-device preview transcription in addition to the server-generated transcript?
 - What exact context sheet template should be supported in the first release?
 - How much user review and editing should happen before a generated context sheet is finalized?
 - Should collections be purely personal folders, or eventually map to shared sites or projects?
