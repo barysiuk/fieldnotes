@@ -13,6 +13,7 @@ type IconName =
   | 'layers'
   | 'user'
   | 'settings'
+  | 'plus'
   | 'cloud'
   | 'mail'
   | 'check-circle'

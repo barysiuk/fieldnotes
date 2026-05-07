@@ -38,8 +38,9 @@ import {
 } from './src/lib/voiceNotes';
 import { DocumentsScreen } from './src/screens/DocumentsScreen';
 import { NotesScreen } from './src/screens/NotesScreen';
-import type { VoiceNote } from './src/types';
+import type { ContextSheet, VoiceNote } from './src/types';
 import { BottomTabButton } from './src/ui/BottomTabButton';
+import { ContextSheetDetailSheet } from './src/ui/ContextSheetDetailSheet';
 import { Icon } from './src/ui/Icon';
 import { NoteDetailSheet } from './src/ui/NoteDetailSheet';
 import type { AppNotice } from './src/ui/NoticeBanner';
@@ -65,6 +66,7 @@ export default function App() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [deletingNoteId, setDeletingNoteId] = useState<string | null>(null);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const [selectedContextSheet, setSelectedContextSheet] = useState<ContextSheet | null>(null);
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
   const [queuedPlaybackId, setQueuedPlaybackId] = useState<string | null>(null);
   const [hasRecordingPermission, setHasRecordingPermission] = useState<boolean | null>(
@@ -100,9 +102,6 @@ export default function App() {
 
   const accountEmail = accountSession?.user.email ?? null;
   const pendingSyncCount = savedNotes.filter(isVoiceNotePendingSync).length;
-  const completedTranscriptCount = savedNotes.filter(
-    (note) => note.processingStatus === 'complete'
-  ).length;
   const isBusy = isLoading || isSaving || isSyncing || deletingNoteId !== null;
   const isAuthBusy = isAuthLoading || authAction !== null;
   const noteCountLabel =
@@ -762,8 +761,10 @@ export default function App() {
             />
           ) : (
             <DocumentsScreen
-              completedTranscriptCount={completedTranscriptCount}
-              pendingSyncCount={pendingSyncCount}
+              accountConnected={Boolean(accountSession)}
+              isSupabaseConfigured={isSupabaseConfigured}
+              notes={savedNotes}
+              onOpenContextSheet={setSelectedContextSheet}
             />
           )}
 
@@ -874,6 +875,14 @@ export default function App() {
           passwordInput={passwordInput}
           session={accountSession}
           visible={isSettingsOpen}
+        />
+
+        <ContextSheetDetailSheet
+          notice={null}
+          onClose={() => {
+            setSelectedContextSheet(null);
+          }}
+          sheet={selectedContextSheet}
         />
       </View>
     </SafeAreaProvider>
